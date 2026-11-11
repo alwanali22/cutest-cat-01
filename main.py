@@ -1,299 +1,203 @@
-"""Noir Hugs a Fish — cutest-cat v4 entry (make.fun cutest-cat-01).
+# Mimi Hugs a Heart — cutest-cat v5 entry (make.fun cutest-cat-01)
+# A fluffy white kitten with big bright blue eyes and a little red bow
+# hugs a big red heart. Pure stdlib Python: draws procedurally, no
+# network, no fonts, deterministic. Writes one PNG to /output/entry.png.
+import os, struct, zlib, math
 
-A black kitten with big amber eyes hugs a big pink fish plush.
-Drawn procedurally: pure-stdlib PNG writer + supersampled rasterizer.
-Deterministic: same bytes on every run. No network, no files read.
-"""
-import math
-import os
-import struct
-import zlib
-
+S = 2.0
 W = 1024
-SS = 2
-BW = W * SS
+H = 1024
+B = int(W * S)
 
-CREAM = (255, 246, 232)
-CREAM2 = (255, 238, 214)
-DOT = (242, 224, 198)
-SHADOW = (214, 196, 168)
-INK = (43, 43, 51)
-INK2 = (62, 62, 74)
-INK3 = (80, 80, 94)
-PINK = (255, 159, 178)
-PINK_D = (238, 120, 145)
-PINK_L = (255, 196, 207)
-AMBER = (245, 166, 35)
-AMBER_D = (214, 130, 10)
-WHITE = (255, 255, 255)
-DARK = (30, 30, 38)
-NOSE = (255, 120, 140)
-WHISK = (228, 222, 210)
+# --- palette ---
+BG      = (255, 233, 236)  # soft pink background
+HALO    = (255, 245, 246)  # pale halo behind the kitten
+WHITE   = (255, 255, 255)
+SHADE   = (232, 221, 213)  # soft taupe edge under white shapes
+INNER   = (255, 176, 184)  # pink inner ears / nose / blush
+RED     = (255, 90, 110)   # heart + bow
+RED_D   = (230, 60, 85)
+BLUE    = (58, 160, 255)   # bright blue eyes
+DARK    = (48, 42, 46)     # pupils / outlines / mouth
+GREY    = (170, 158, 152)  # whiskers / toes
+CREAM   = (255, 250, 244)  # belly patch
 
+def new_canvas():
+    return bytearray(BG * B * B)
 
-def write_png(path, w, h, rgb):
-    raw = b"".join(b"\x00" + rgb[y * w * 3:(y + 1) * w * 3]
-                   for y in range(h))
+def set_px(px, x, y, c):
+    if 0 <= x < B and 0 <= y < B:
+        i = (y * B + x) * 3
+        px[i:i+3] = bytes(c)
 
-    def chunk(tag, data):
-        c = struct.pack(">I", len(data)) + tag + data
-        return c + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-
-    png = b"\x89PNG\r\n\x1a\n"
-    png += chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
-    png += chunk(b"IDAT", zlib.compress(raw, 6))
-    png += chunk(b"IEND", b"")
-    with open(path, "wb") as f:
-        f.write(png)
-
-
-# ---------------- canvas (supersampled) ----------------
-buf = bytearray(bytes(CREAM) * BW * BW)
-
-
-def _fill_row(y, xa, xb, color):
-    if y < 0 or y >= BW:
-        return
-    xa = max(0, xa)
-    xb = min(BW - 1, xb)
-    if xa > xb:
-        return
-    n = xb - xa + 1
-    i0 = (y * BW + xa) * 3
-    buf[i0:i0 + n * 3] = bytes(color) * n
-
-
-def ellipse(cx, cy, rx, ry, color):
-    y0 = max(0, int(cy - ry))
-    y1 = min(BW - 1, int(cy + ry) + 1)
+def ellipse(px, cx, cy, rx, ry, c, rot=0.0):
+    cr, sr = math.cos(rot), math.sin(rot)
+    x0 = max(0, int(cx - rx - 2)); x1 = min(B - 1, int(cx + rx + 2))
+    y0 = max(0, int(cy - ry - 2)); y1 = min(B - 1, int(cy + ry + 2))
     for y in range(y0, y1 + 1):
-        dy = (y - cy) / ry
-        s = 1.0 - dy * dy
-        if s <= 0:
-            continue
-        dx = math.sqrt(s) * rx
-        _fill_row(y, int(cx - dx), int(cx + dx), color)
+        for x in range(x0, x1 + 1):
+            dx, dy = x - cx, y - cy
+            ex = dx * cr + dy * sr; ey = -dx * sr + dy * cr
+            if (ex / rx) ** 2 + (ey / ry) ** 2 <= 1.0:
+                set_px(px, x, y, c)
 
-
-def circle(cx, cy, r, color):
-    ellipse(cx, cy, r, r, color)
-
-
-def poly(points, color):
-    if len(points) < 3:
-        return
-    ys = [p[1] for p in points]
-    y0 = max(0, int(min(ys)))
-    y1 = min(BW - 1, int(max(ys)) + 1)
-    n = len(points)
+def poly(px, pts, c):
+    # scanline polygon fill
+    y0 = max(0, int(min(p[1] for p in pts))); y1 = min(B - 1, int(max(p[1] for p in pts)))
+    n = len(pts)
     for y in range(y0, y1 + 1):
         xs = []
         for i in range(n):
-            x0, y0p = points[i]
-            x1, y1p = points[(i + 1) % n]
-            if (y0p <= y < y1p) or (y1p <= y < y0p):
-                t = (y - y0p) / (y1p - y0p)
-                xs.append(x0 + t * (x1 - x0))
+            x1, y1p = pts[i]; x2, y2p = pts[(i + 1) % n]
+            if (y1p <= y < y2p) or (y2p <= y < y1p):
+                t = (y - y1p) / (y2p - y1p)
+                xs.append(x1 + t * (x2 - x1))
         xs.sort()
         for k in range(0, len(xs) - 1, 2):
-            _fill_row(y, int(xs[k]), int(xs[k + 1]), color)
+            for x in range(max(0, int(xs[k])), min(B - 1, int(xs[k + 1])) + 1):
+                set_px(px, x, y, c)
 
+def arc(px, cx, cy, r, a0, a1, c, th=10):
+    n = max(8, int((a1 - a0) * r / 8))
+    for i in range(n + 1):
+        a = a0 + (a1 - a0) * i / n
+        for d in range(-th // 2, th // 2 + 1):
+            set_px(px, int(cx + (r + d) * math.cos(a)), int(cy + (r + d) * math.sin(a)), c)
 
-def rrect(x0, y0, x1, y1, r, color):
-    for y in range(max(0, int(y0)), min(BW, int(y1) + 1)):
-        _fill_row(y, int(x0), int(x1), color)
-    # corners are square here; circles at the corners soften them
-    circle(x0 + r, y0 + r, r, color)
-    circle(x1 - r, y0 + r, r, color)
-    circle(x0 + r, y1 - r, r, color)
-    circle(x1 - r, y1 - r, r, color)
+def line(px, x1, y1, x2, y2, c, th=8):
+    n = max(2, int(max(abs(x2 - x1), abs(y2 - y1)) / 4))
+    for i in range(n + 1):
+        t = i / n
+        x = x1 + (x2 - x1) * t; y = y1 + (y2 - y1) * t
+        for dx in range(-th // 2, th // 2 + 1):
+            for dy in range(-th // 2, th // 2 + 1):
+                if dx * dx + dy * dy <= (th // 2) ** 2:
+                    set_px(px, int(x) + dx, int(y) + dy, c)
 
+def heart(px, cx, cy, s, c, dc):
+    # two round lobes + downward triangle, classic heart
+    ellipse(px, cx - int(0.42 * s), cy - int(0.28 * s), int(0.46 * s), int(0.46 * s), c)
+    ellipse(px, cx + int(0.42 * s), cy - int(0.28 * s), int(0.46 * s), int(0.46 * s), c)
+    poly(px, [(cx - int(0.86 * s), cy - int(0.10 * s)),
+              (cx + int(0.86 * s), cy - int(0.10 * s)),
+              (cx, cy + int(0.95 * s))], c)
+    # glossy highlight on the upper-left lobe
+    ellipse(px, cx - int(0.55 * s), cy - int(0.48 * s), int(0.16 * s), int(0.10 * s), (255, 205, 210), rot=-0.5)
 
-def thick_line(x0, y0, x1, y1, w, color):
-    dx = x1 - x0
-    dy = y1 - y0
-    ln = math.hypot(dx, dy)
-    if ln == 0:
-        circle(x0, y0, w / 2.0, color)
-        return
-    nx = -dy / ln * w / 2.0
-    ny = dx / ln * w / 2.0
-    poly([(x0 + nx, y0 + ny), (x1 + nx, y1 + ny),
-          (x1 - nx, y1 - ny), (x0 - nx, y0 - ny)], color)
-    circle(x0, y0, w / 2.0, color)
-    circle(x1, y1, w / 2.0, color)
+def draw_background(px):
+    ellipse(px, 1024, 1000, 900, 900, HALO)
+    # tiny floating hearts + dots
+    for (hx, hy, hs) in [(300, 330, 60), (1760, 300, 48), (1820, 1550, 55),
+                         (260, 1580, 50), (1500, 190, 40), (520, 180, 42)]:
+        heart(px, hx, hy, hs, (255, 150, 165), RED_D)
+    for (dx, dy, r) in [(420, 700, 16), (1660, 700, 16), (700, 220, 12),
+                        (1400, 300, 12), (180, 1100, 14), (1900, 1050, 14)]:
+        ellipse(px, dx, dy, r, r, (255, 210, 216))
 
+def draw_tail(px):
+    # curling tail: overlapping circles rising from the body's right side
+    for (tx, ty, tr) in [(1360, 1560, 95), (1460, 1470, 85), (1530, 1370, 75)]:
+        ellipse(px, tx, ty + 6, tr, tr, SHADE)
+        ellipse(px, tx, ty, tr - 8, tr - 8, WHITE)
 
-def arc(cx, cy, r, a0, a1, w, color, steps=24):
-    for i in range(steps + 1):
-        a = a0 + (a1 - a0) * i / steps
-        x = cx + r * math.cos(a)
-        y = cy + r * math.sin(a)
-        circle(x, y, w / 2.0, color)
-
-
-def bezier(p0, p1, p2, w, color, steps=28):
-    prev = None
-    for i in range(steps + 1):
-        t = i / steps
-        x = (1 - t) ** 2 * p0[0] + 2 * (1 - t) * t * p1[0] + t * t * p2[0]
-        y = (1 - t) ** 2 * p0[1] + 2 * (1 - t) * t * p1[1] + t * t * p2[1]
-        if prev is not None:
-            thick_line(prev[0], prev[1], x, y, w, color)
-        prev = (x, y)
-
-
-def rot_pt(x, y, cx, cy, ang):
-    c = math.cos(ang)
-    s = math.sin(ang)
-    dx = x - cx
-    dy = y - cy
-    return (cx + dx * c - dy * s, cy + dx * s + dy * c)
-
-
-# ---------------- background ----------------
-def draw_background():
-    # soft halo behind the subjects
-    ellipse(1024, 1050, 760, 700, CREAM2)
-    # a few small paw-print dots scattered around
-    for (x, y, r) in [(300, 420, 26), (350, 470, 20), (1760, 480, 24),
-                      (1800, 540, 18), (260, 1560, 22), (1820, 1620, 26),
-                      (1500, 300, 20), (560, 300, 18)]:
-        circle(x, y, r, DOT)
-    # ground shadow
-    ellipse(1024, 1580, 620, 110, SHADOW)
-
-
-# ---------------- the pink fish plush ----------------
-def draw_fish():
-    # Fish body as a rotated polygon, held in front of the belly
-    # (drawn after the kitten body, before the front paws).
-    cx, cy = 1030, 1360
-    ang = -0.5  # tilt
-    S = 0.8
-    # body outline in local coords (before rotation): a plump fish
-    local = [
-        (330, -40), (300, -150), (190, -230), (40, -250), (-140, -210),
-        (-280, -120), (-330, -30), (-280, 60), (-300, 150), (-180, 210),
-        (-40, 250), (140, 230), (260, 150), (320, 60),
-    ]
-    pts = [rot_pt(x * S + cx, y * S + cy, cx, cy, ang) for (x, y) in local]
-    poly(pts, PINK)
-    # belly patch (lighter, lower half)
-    belly = [rot_pt(x * S + cx, y * S + cy + 70 * S, cx, cy, ang)
-             for (x, y) in [
-                 (260, -20), (200, -90), (80, -130), (-80, -120),
-                 (-200, -60), (-230, 10), (-140, 70), (0, 100),
-                 (150, 80), (240, 30),
-             ]]
-    poly(belly, PINK_L)
-    # tail fin (two triangles fanning down-left)
-    tail = [rot_pt(x * S + cx, y * S + cy, cx, cy, ang) for (x, y) in [
-        (-300, -60), (-520, -190), (-430, -30), (-520, 170), (-290, 70),
-    ]]
-    poly(tail, PINK_D)
-    # dorsal fin on top
-    dorsal = [rot_pt(x * S + cx, y * S + cy, cx, cy, ang) for (x, y) in [
-        (-60, -240), (60, -330), (170, -250), (120, -210), (-20, -220),
-    ]]
-    poly(dorsal, PINK_D)
-    # gill curve
-    gx, gy = rot_pt(cx + 180 * S, cy - 40 * S, cx, cy, ang)
-    arc(gx, gy, 88, 0.5, 2.2, 12, PINK_D, steps=18)
-    # fish eye (big, friendly)
-    ex, ey = rot_pt(cx + 210 * S, cy - 120 * S, cx, cy, ang)
-    circle(ex, ey, 50, WHITE)
-    circle(ex + 6, ey + 5, 27, DARK)
-    circle(ex - 10, ey - 11, 11, WHITE)
-    # shine on the body
-    sx, sy = rot_pt(cx - 40 * S, cy - 130 * S, cx, cy, ang)
-    ellipse(sx, sy, 96, 34, PINK_L)
-
-
-# ---------------- the black kitten ----------------
-def draw_kitten():
-    # tail curling out to the right, behind the body
-    bezier((1250, 1420), (1520, 1500), (1560, 1260), 90, INK, steps=24)
-    circle(1560, 1260, 48, INK2)
-    # ears (behind the head)
-    poly([(700, 700), (790, 420), (900, 660)], INK)
-    poly([(1100, 660), (1210, 420), (1300, 700)], INK)
-    poly([(750, 650), (795, 500), (855, 630)], PINK_D)
-    poly([(1145, 630), (1205, 500), (1250, 650)], PINK_D)
-    # body (sitting)
-    ellipse(960, 1290, 340, 310, INK)
-    # lighter chest/belly patch
-    ellipse(960, 1330, 210, 210, INK2)
-    # head
-    circle(960, 880, 310, INK)
-    # eyes: big amber ovals
-    for ex in (820, 1100):
-        ellipse(ex, 880, 96, 112, AMBER)
-        ellipse(ex, 890, 52, 66, DARK)
-        circle(ex - 28, 850, 22, WHITE)
-        circle(ex + 30, 920, 10, WHITE)
-    # pink nose
-    poly([(960, 1000), (920, 1030), (1000, 1030)], NOSE)
-    # mouth: little omega curve under the nose
-    arc(930, 1060, 42, 0.15 * math.pi, 0.85 * math.pi, 12, INK3, steps=14)
-    arc(990, 1060, 42, 0.15 * math.pi, 0.85 * math.pi, 12, INK3, steps=14)
-    # blush
-    ellipse(700, 1020, 62, 34, (255, 130, 150))
-    ellipse(1220, 1020, 62, 34, (255, 130, 150))
-    # whiskers (light, thin)
-    for (x0, y0, x1, y1) in [
-            (700, 990, 520, 950), (700, 1030, 520, 1030),
-            (700, 1070, 540, 1110),
-            (1220, 990, 1400, 950), (1220, 1030, 1400, 1030),
-            (1220, 1070, 1380, 1110)]:
-        thick_line(x0, y0, x1, y1, 8, WHISK)
+def draw_body(px):
+    # soft edge, then the body, then the belly patch
+    ellipse(px, 1024, 1396, 345, 300, SHADE)
+    ellipse(px, 1024, 1388, 335, 292, WHITE)
+    ellipse(px, 1024, 1470, 225, 190, CREAM)
     # hind paws at the base
-    ellipse(700, 1530, 120, 70, INK)
-    ellipse(1220, 1530, 120, 70, INK)
+    ellipse(px, 830, 1665, 130, 62, SHADE)
+    ellipse(px, 830, 1658, 124, 56, WHITE)
+    ellipse(px, 1225, 1665, 130, 62, SHADE)
+    ellipse(px, 1225, 1658, 124, 56, WHITE)
+    for lx in (790, 830, 870):
+        line(px, lx, 1640, lx, 1678, GREY, th=6)
+    for lx in (1185, 1225, 1265):
+        line(px, lx, 1640, lx, 1678, GREY, th=6)
 
+def draw_big_heart(px):
+    heart(px, 1024, 1240, 600, RED, RED_D)
 
-def draw_paws():
-    # front paws wrapped around the fish (the hug), drawn over the fish
-    ellipse(1230, 1300, 130, 95, INK)
-    ellipse(830, 1330, 120, 90, INK)
-    # tiny toe lines on the front paws
-    for (x0, y0, x1, y1) in [(1200, 1240, 1200, 1300),
-                             (1250, 1240, 1250, 1300),
-                             (810, 1270, 810, 1330),
-                             (855, 1270, 855, 1330)]:
-        thick_line(x0, y0, x1, y1, 7, INK3)
+def draw_head(px):
+    # ears first (behind the head)
+    poly(px, [(770, 760), (700, 400), (1010, 600)], SHADE)
+    poly(px, [(770, 750), (710, 420), (990, 600)], WHITE)
+    poly(px, [(800, 690), (750, 490), (930, 620)], INNER)
+    poly(px, [(1280, 760), (1350, 400), (1040, 600)], SHADE)
+    poly(px, [(1280, 750), (1340, 420), (1060, 600)], WHITE)
+    poly(px, [(1250, 690), (1300, 490), (1120, 620)], INNER)
+    # head with a soft lower edge
+    ellipse(px, 1024, 920, 300, 296, SHADE)
+    ellipse(px, 1024, 912, 292, 290, WHITE)
+    # big bright blue eyes
+    for ex in (885, 1163):
+        ellipse(px, ex, 900, 92, 108, BLUE)
+        ellipse(px, ex, 905, 52, 66, DARK)
+        ellipse(px, ex - 22, 865, 26, 30, WHITE)
+    # pink nose + happy mouth
+    poly(px, [(994, 1030), (1054, 1030), (1024, 1066)], INNER)
+    arc(px, 978, 1062, 70, 0.15 * math.pi, 0.85 * math.pi, DARK, th=14)
+    arc(px, 1070, 1062, 70, 0.15 * math.pi, 0.85 * math.pi, DARK, th=14)
+    # blush + whiskers
+    ellipse(px, 760, 1010, 55, 32, (255, 190, 196), rot=-0.15)
+    ellipse(px, 1288, 1010, 55, 32, (255, 190, 196), rot=0.15)
+    for wy in (950, 990, 1030):
+        line(px, 730, wy, 560, wy - 40, GREY, th=7)
+        line(px, 1318, wy, 1488, wy - 40, GREY, th=7)
 
+def draw_bow(px):
+    # little red bow on the neck
+    poly(px, [(1024, 1200), (900, 1130), (900, 1270)], RED)
+    poly(px, [(1024, 1200), (1148, 1130), (1148, 1270)], RED)
+    ellipse(px, 1024, 1200, 42, 42, RED_D)
+    ellipse(px, 1024, 1200, 26, 26, RED)
 
-def downsample():
-    out = bytearray(W * W * 3)
-    for y in range(W):
+def draw_paws(px):
+    # front paws wrapped over the big heart
+    for (cx, cy, rot) in ((850, 1330, 0.5), (1198, 1330, -0.5)):
+        ellipse(px, cx, cy + 8, 110, 88, SHADE, rot=rot)
+        ellipse(px, cx, cy, 104, 82, WHITE, rot=rot)
+    for lx in (812, 850, 888):
+        line(px, lx, 1312, lx, 1352, GREY, th=6)
+    for lx in (1160, 1198, 1236):
+        line(px, lx, 1312, lx, 1352, GREY, th=6)
+
+def downsample(px):
+    out = bytearray(W * H * 3)
+    for y in range(H):
         for x in range(W):
-            i0 = ((2 * y) * BW + 2 * x) * 3
-            i1 = i0 + 3
-            i2 = ((2 * y + 1) * BW + 2 * x) * 3
-            i3 = i2 + 3
-            o = (y * W + x) * 3
-            out[o] = (buf[i0] + buf[i1] + buf[i2] + buf[i3]) // 4
-            out[o + 1] = (buf[i0 + 1] + buf[i1 + 1] + buf[i2 + 1] + buf[i3 + 1]) // 4
-            out[o + 2] = (buf[i0 + 2] + buf[i1 + 2] + buf[i2 + 2] + buf[i3 + 2]) // 4
-    return bytes(out)
+            r = g = b = 0
+            for dy in range(2):
+                for dx in range(2):
+                    i = ((y * 2 + dy) * B + (x * 2 + dx)) * 3
+                    r += px[i]; g += px[i + 1]; b += px[i + 2]
+            j = (y * W + x) * 3
+            out[j] = r // 4; out[j + 1] = g // 4; out[j + 2] = b // 4
+    return out
 
+def write_png(path, rgb):
+    raw = b"".join(b"\x00" + bytes(rgb[y * W * 3:(y + 1) * W * 3]) for y in range(H))
+    def chunk(t, d):
+        c = t + d
+        return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c) & 0xffffffff)
+    png = b"\x89PNG\r\n\x1a\n"
+    png += chunk(b"IHDR", struct.pack(">IIBBBBB", W, H, 8, 2, 0, 0, 0))
+    png += chunk(b"IDAT", zlib.compress(raw, 9))
+    png += chunk(b"IEND", b"")
+    with open(path, "wb") as fh:
+        fh.write(png)
 
 def main():
-    draw_background()
-    draw_kitten()
-    draw_fish()
-    draw_paws()
-    rgb = downsample()
-    out = os.environ.get("ENTRY_OUT", "/output/entry.png")
-    try:
-        write_png(out, W, W, rgb)
-    except OSError:
-        out = "out/entry.png"
-        os.makedirs("out", exist_ok=True)
-        write_png(out, W, W, rgb)
-    print("wrote", out)
-
+    px = new_canvas()
+    draw_background(px)
+    draw_big_heart(px)
+    draw_tail(px)
+    draw_body(px)
+    draw_head(px)
+    draw_bow(px)
+    draw_paws(px)
+    os.makedirs("/output", exist_ok=True)
+    write_png("/output/entry.png", downsample(px))
 
 if __name__ == "__main__":
     main()

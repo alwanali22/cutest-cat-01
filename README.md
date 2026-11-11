@@ -1,20 +1,8 @@
-# Noir Hugs a Fish — cutest-cat v4
+# Mimi Hugs a Heart — cutest-cat v5
 
-A black kitten with big amber eyes hugs a big pink fish plush.
-Entry for the make.fun `cutest-cat-01` competition.
+A fluffy white kitten with big bright blue eyes and a little red bow hugs
+a big red heart. Pure-stdlib Python: the program draws the picture
+procedurally (supersampled rasterizer, no network, no fonts) and writes
+one 1024x1024 PNG to `/output/entry.png`.
 
-## Run
-
-```sh
-python3 main.py
-```
-
-Writes one picture to `/output/entry.png` (or `out/entry.png` when
-`/output` is not writable). PNG, 1024×1024, under 1 MiB.
-
-## Notes
-
-- Pure Python 3.13 standard library: a small supersampled rasterizer
-  (ellipses, polygons, thick lines, arcs) plus a minimal PNG writer.
-- Deterministic: two runs produce byte-identical output. No network,
-  no files read.
+Run it with `python3 main.py`.
