@@ -1,8 +1,3 @@
-# Mimi Hugs a Heart — cutest-cat v5
+# Pumpkin Purr
 
-A fluffy white kitten with big bright blue eyes and a little red bow hugs
-a big red heart. Pure-stdlib Python: the program draws the picture
-procedurally (supersampled rasterizer, no network, no fonts) and writes
-one 1024x1024 PNG to `/output/entry.png`.
-
-Run it with `python3 main.py`.
+Pumpkin Purr is a deterministic pure Python application that renders a cute cream kitten peeking out of a big round orange pumpkin on a warm autumn cream background. Using standard library modules only, it draws anti-aliased vector shapes and soft lighting via a 2x supersampled rasterizer, outputting a high-resolution 1024x1024 PNG image.
