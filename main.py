@@ -1,345 +1,384 @@
-#!/usr/bin/env python3
-"""Milo in a teacup — the cutest cat, drawn procedurally.
+"""Pip in a Box — cutest-cat v3 entry (make.fun cutest-cat-01).
 
-A sleepy cream kitten curled inside a big teal teacup: paws draped over the
-rim, big droopy-but-bright amber eyes, curled tail peeking out, steam wisps
-curling up, and a tiny fish biscuit waiting on the saucer.
+A tiny grey-and-white kitten sits in an open cardboard box, one paw
+raised, batting at a small orange butterfly fluttering just above its
+nose. Big round bright eyes look up, mouth open in a happy smile.
 
-Pure standard library only. Deterministic: no randomness, no clock, no
-network. Renders at 2x supersampling, box-downsamples to 1024x1024, and
-writes /output/entry.png (or $MAKEFUN_OUTPUT_DIR/entry.png).
+Pure Python 3.13 stdlib only. Own rasterizer (2x supersampled span
+fills + 2x2 box downsample) and own PNG encoder (zlib). Deterministic:
+same bytes on every run, no network, no randomness, no clock.
+Writes /output/entry.png (or $MAKEFUN_OUTPUT_DIR/entry.png).
 """
-import binascii
 import math
 import os
 import struct
 import zlib
 
-W = 1024          # output size
-SS = 2            # supersample factor
-SW = W * SS       # working buffer width (2048)
+W = 1024            # output size
+SS = 2              # supersample factor
+SW = W * SS         # supersampled width
 
-# ---------------------------------------------------------------- palette
-CREAM = bytes((255, 241, 220))   # kitten fur
-CREAM_SHADE = bytes((255, 224, 184))
-GINGER = bytes((240, 190, 138))  # forehead stripes / tail stripes
-OUTLINE = bytes((122, 90, 64))   # warm dark brown outlines
-PINK = bytes((245, 168, 184))    # inner ears
-NOSE = bytes((232, 122, 138))
-BLUSH = bytes((255, 185, 185))
-IRIS = bytes((192, 138, 62))     # amber eyes
-PUPIL = bytes((36, 24, 18))
-WHITE = bytes((255, 255, 255))
-TEAL = bytes((79, 163, 155))     # teacup
-TEAL_DARK = bytes((47, 107, 100))
-TEAL_LIGHT = bytes((143, 207, 197))
-TEA = bytes((243, 217, 168))     # milky tea surface
-SAUCER = bytes((253, 246, 238))
-SAUCER_EDGE = bytes((232, 217, 196))
-FISH = bytes((242, 166, 90))     # fish biscuit
-STEAM = bytes((255, 255, 255))
-
-# Working buffer: SW x SW RGB, row-major.
+# ---------------------------------------------------------------- canvas
 buf = bytearray(SW * SW * 3)
 
 
-def _span(y, x0, x1, c):
-    """Fill pixels [x0, x1) on supersampled row y with 3-byte color c."""
-    if x1 <= x0 or y < 0 or y >= SW:
-        return
-    if x0 < 0:
-        x0 = 0
-    if x1 > SW:
-        x1 = SW
-    if x1 <= x0:
-        return
-    base = (y * SW + x0) * 3
-    buf[base:base + (x1 - x0) * 3] = c * (x1 - x0)
+def _set(x, y, c):
+    if 0 <= x < SW and 0 <= y < SW:
+        i = (y * SW + x) * 3
+        buf[i] = c[0]
+        buf[i + 1] = c[1]
+        buf[i + 2] = c[2]
 
 
-def circle(cx, cy, r, c):
-    """Filled circle; centre/radius given in 1024-space coordinates."""
+def span(y, x0, x1, c):
+    """Fill one supersampled scanline from x0 to x1 (inclusive)."""
+    if y < 0 or y >= SW:
+        return
+    x0 = max(0, int(math.floor(x0)))
+    x1 = min(SW - 1, int(math.ceil(x1)))
+    if x1 < x0:
+        return
+    i = (y * SW + x0) * 3
+    n = x1 - x0 + 1
+    row = bytes(c) * n
+    buf[i:i + n * 3] = row
+
+
+def disc(cx, cy, r, c):
+    """Filled circle, centre (cx, cy), radius r (output-pixel units)."""
     cx *= SS
     cy *= SS
     r *= SS
     r2 = r * r
-    y0 = max(0, int(cy - r))
-    y1 = min(SW - 1, int(cy + r) + 1)
+    y0 = int(math.floor(cy - r))
+    y1 = int(math.ceil(cy + r))
     for y in range(y0, y1 + 1):
         dy = y - cy
-        d2 = r2 - dy * dy
-        if d2 < 0:
-            continue
-        dx = int(math.sqrt(d2))
-        _span(y, int(cx - dx), int(cx + dx) + 1, c)
+        dx = math.sqrt(max(0.0, r2 - dy * dy))
+        span(y, cx - dx, cx + dx, c)
 
 
 def ellipse(cx, cy, rx, ry, c):
-    """Filled ellipse; centre/radii given in 1024-space coordinates."""
+    """Filled axis-aligned ellipse (output-pixel units)."""
     cx *= SS
     cy *= SS
     rx *= SS
     ry *= SS
-    y0 = max(0, int(cy - ry))
-    y1 = min(SW - 1, int(cy + ry) + 1)
+    y0 = int(math.floor(cy - ry))
+    y1 = int(math.ceil(cy + ry))
     for y in range(y0, y1 + 1):
-        t = (y - cy) / ry
-        q = 1.0 - t * t
-        if q <= 0:
+        dy = (y - cy) / ry
+        t = 1.0 - dy * dy
+        if t < 0:
             continue
-        dx = int(rx * math.sqrt(q))
-        _span(y, int(cx - dx), int(cx + dx) + 1, c)
+        dx = rx * math.sqrt(t)
+        span(y, cx - dx, cx + dx, c)
+
+
+def rellipse(cx, cy, rx, ry, ang, c):
+    """Filled ellipse rotated by ang degrees (output-pixel units)."""
+    a = math.radians(ang)
+    ca, sa = math.cos(a), math.sin(a)
+    cx *= SS
+    cy *= SS
+    rx *= SS
+    ry *= SS
+    # bounding box of the rotated ellipse
+    bx = math.sqrt((rx * ca) ** 2 + (ry * sa) ** 2)
+    by = math.sqrt((rx * sa) ** 2 + (ry * ca) ** 2)
+    y0 = int(math.floor(cy - by))
+    y1 = int(math.ceil(cy + by))
+    for y in range(y0, y1 + 1):
+        dy = y - cy
+        # solve for x range: ((x ca + y sa)/rx)^2 + ((-x sa + y ca)/ry)^2 <= 1
+        # A x^2 + B x + C <= 0 with
+        A = (ca / rx) ** 2 + (sa / ry) ** 2
+        B = 2 * dy * (ca * sa / rx ** 2 - sa * ca / ry ** 2)
+        C = (dy * sa / rx) ** 2 + (dy * ca / ry) ** 2 - 1.0
+        discr = B * B - 4 * A * C
+        if discr < 0:
+            continue
+        sq = math.sqrt(discr)
+        x_lo = (-B - sq) / (2 * A)
+        x_hi = (-B + sq) / (2 * A)
+        span(y, cx + x_lo, cx + x_hi, c)
 
 
 def poly(points, c):
-    """Scanline-filled polygon; points are (x, y) in 1024-space."""
+    """Filled polygon, points in output-pixel units."""
     pts = [(x * SS, y * SS) for (x, y) in points]
-    n = len(pts)
     ys = [p[1] for p in pts]
-    y0 = max(0, int(min(ys)))
-    y1 = min(SW - 1, int(max(ys)) + 1)
+    y0 = int(math.floor(min(ys)))
+    y1 = int(math.ceil(max(ys)))
+    n = len(pts)
     for y in range(y0, y1 + 1):
+        yc = y + 0.5
         xs = []
         for i in range(n):
-            x1, y1p = pts[i]
-            x2, y2p = pts[(i + 1) % n]
-            if (y1p <= y < y2p) or (y2p <= y < y1p):
-                t = (y - y1p) / (y2p - y1p)
-                xs.append(x1 + t * (x2 - x1))
+            x0, y0p = pts[i]
+            x1, y1p = pts[(i + 1) % n]
+            if (y0p <= yc < y1p) or (y1p <= yc < y0p):
+                t = (yc - y0p) / (y1p - y0p)
+                xs.append(x0 + t * (x1 - x0))
         xs.sort()
-        for k in range(0, len(xs) - 1, 2):
-            _span(y, int(xs[k]), int(xs[k + 1]) + 1, c)
+        for j in range(0, len(xs) - 1, 2):
+            span(y, xs[j], xs[j + 1], c)
 
 
-def thick_line(x1, y1, x2, y2, w, c):
-    """A line as a filled quad with round caps; w is width in 1024-space."""
-    dx = x2 - x1
-    dy = y2 - y1
-    ln = math.hypot(dx, dy)
-    if ln == 0:
-        circle(x1, y1, w / 2.0, c)
+def rrect(x0, y0, x1, y1, r, c):
+    """Filled rounded rectangle (output-pixel units)."""
+    poly([(x0 + r, y0), (x1 - r, y0), (x1, y0 + r), (x1, y1 - r),
+          (x1 - r, y1), (x0 + r, y1), (x0, y1 - r), (x0, y0 + r)], c)
+    disc(x0 + r, y0 + r, r, c)
+    disc(x1 - r, y0 + r, r, c)
+    disc(x0 + r, y1 - r, r, c)
+    disc(x1 - r, y1 - r, r, c)
+
+
+def thick_line(x0, y0, x1, y1, w, c):
+    """Line of width w (output-pixel units) with round caps."""
+    dx, dy = x1 - x0, y1 - y0
+    L = math.hypot(dx, dy)
+    if L < 1e-6:
+        disc(x0, y0, w / 2.0, c)
         return
-    nx = -dy / ln * w / 2.0
-    ny = dx / ln * w / 2.0
-    poly([(x1 + nx, y1 + ny), (x2 + nx, y2 + ny),
-          (x2 - nx, y2 - ny), (x1 - nx, y1 - ny)], c)
-    circle(x1, y1, w / 2.0, c)
-    circle(x2, y2, w / 2.0, c)
+    nx, ny = -dy / L * w / 2.0, dx / L * w / 2.0
+    poly([(x0 + nx, y0 + ny), (x1 + nx, y1 + ny),
+          (x1 - nx, y1 - ny), (x0 - nx, y0 - ny)], c)
+    disc(x0, y0, w / 2.0, c)
+    disc(x1, y1, w / 2.0, c)
 
 
-def arc_dots(cx, cy, r, a0, a1, w, c, steps=24):
-    """A thick arc drawn as dots along it; angles in radians."""
+def arc(cx, cy, r, a0, a1, w, c):
+    """Arc stroke, angles in degrees, width w (output-pixel units)."""
+    steps = max(4, int(abs(a1 - a0) / 4))
     for i in range(steps + 1):
-        a = a0 + (a1 - a0) * i / steps
-        circle(cx + r * math.cos(a), cy + r * math.sin(a), w / 2.0, c)
+        a = math.radians(a0 + (a1 - a0) * i / steps)
+        disc(cx + r * math.cos(a), cy + r * math.sin(a), w / 2.0, c)
 
 
-def band_dots(points, r_out, r_in, c_out, c_in):
-    """A thick curved band through points: outline dots then fill dots."""
-    for (x, y) in points:
-        circle(x, y, r_out, c_out)
-    for (x, y) in points:
-        circle(x, y, r_in, c_in)
+def outline_disc(cx, cy, r, fill, out, ow):
+    disc(cx, cy, r + ow, out)
+    disc(cx, cy, r, fill)
 
 
-def gradient(top, bottom):
-    """Vertical gradient background, top -> bottom color."""
-    for y in range(SW):
-        t = y / (SW - 1)
-        r = int(top[0] + (bottom[0] - top[0]) * t)
-        g = int(top[1] + (bottom[1] - top[1]) * t)
-        b = int(top[2] + (bottom[2] - top[2]) * t)
-        _span(y, 0, SW, bytes((r, g, b)))
+def outline_ellipse(cx, cy, rx, ry, fill, out, ow):
+    ellipse(cx, cy, rx + ow, ry + ow, out)
+    ellipse(cx, cy, rx, ry, fill)
 
 
-def downsample():
-    """2x2 box average -> 1024x1024 RGB bytes."""
-    out = bytearray(W * W * 3)
-    for oy in range(W):
-        ra = buf[(oy * 2) * SW * 3:(oy * 2 + 1) * SW * 3]
-        rb = buf[(oy * 2 + 1) * SW * 3:(oy * 2 + 2) * SW * 3]
-        base = oy * W * 3
-        for ox in range(W):
-            i = ox * 6
-            out[base + ox * 3] = (ra[i] + ra[i + 3] + rb[i] + rb[i + 3]) // 4
-            out[base + ox * 3 + 1] = (ra[i + 1] + ra[i + 4] + rb[i + 1] + rb[i + 4]) // 4
-            out[base + ox * 3 + 2] = (ra[i + 2] + ra[i + 5] + rb[i + 2] + rb[i + 5]) // 4
-    return bytes(out)
-
-
+# ---------------------------------------------------------------- PNG
 def png_bytes(w, h, rgb):
-    """Minimal deterministic PNG encoder (RGB, 8-bit, no interlace)."""
+    def chunk(kind, data):
+        out = struct.pack(">I", len(data)) + kind + data
+        out += struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        return out
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
     raw = bytearray()
     for y in range(h):
         raw.append(0)
         raw += rgb[y * w * 3:(y + 1) * w * 3]
-
-    def chunk(typ, data):
-        out = struct.pack(">I", len(data)) + typ + data
-        return out + struct.pack(">I", binascii.crc32(typ + data) & 0xFFFFFFFF)
-
-    ihdr = struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)
     return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
             + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
             + chunk(b"IEND", b""))
 
 
+def downsample():
+    """2x2 box average of the supersampled buffer -> 1024x1024 RGB."""
+    rgb = bytearray(W * W * 3)
+    for y in range(W):
+        for x in range(W):
+            sx = x * SS
+            sy = y * SS
+            acc = [0, 0, 0]
+            for dy in range(SS):
+                base = ((sy + dy) * SW + sx) * 3
+                for dx in range(SS):
+                    i = base + dx * 3
+                    acc[0] += buf[i]
+                    acc[1] += buf[i + 1]
+                    acc[2] += buf[i + 2]
+            o = (y * W + x) * 3
+            rgb[o] = acc[0] // 4
+            rgb[o + 1] = acc[1] // 4
+            rgb[o + 2] = acc[2] // 4
+    return bytes(rgb)
+
+
+# ---------------------------------------------------------------- colors
+BG_TOP = (255, 238, 218)
+BG_BOT = (255, 222, 192)
+BOKEH = (255, 246, 232)
+BOKEH2 = (250, 214, 178)
+OUT = (74, 64, 56)          # warm dark outline
+BOX = (208, 166, 112)       # cardboard
+BOX_DARK = (176, 132, 82)
+BOX_IN = (150, 108, 64)     # box interior shadow
+TAPE = (188, 146, 94)
+GREY = (172, 182, 194)      # kitten fur
+GREY_D = (140, 150, 164)
+WHITE = (252, 252, 252)
+CREAM = (232, 236, 240)     # face patch / chest
+PINK_IN = (246, 172, 186)   # inner ear
+EYE = (44, 146, 128)        # teal-green iris
+PUPIL = (28, 28, 34)
+NOSE = (232, 118, 138)
+MOUTH = (96, 62, 56)
+TONGUE = (242, 132, 142)
+BLUSH = (246, 164, 172)
+FLY_O = (246, 152, 58)      # butterfly orange
+FLY_D = (214, 110, 30)
+FLY_BODY = (70, 52, 40)
+
+
 def background():
-    gradient(bytes((255, 227, 199)), bytes((255, 247, 236)))
-    # soft bokeh circles, low contrast, behind everything
+    for y in range(W):
+        t = y / (W - 1)
+        r = int(BG_TOP[0] + (BG_BOT[0] - BG_TOP[0]) * t)
+        g = int(BG_TOP[1] + (BG_BOT[1] - BG_TOP[1]) * t)
+        b = int(BG_TOP[2] + (BG_BOT[2] - BG_TOP[2]) * t)
+        span(y * SS, 0, SW - 1, (r, g, b))
+        span(y * SS + 1, 0, SW - 1, (r, g, b))
+    # soft bokeh dots, low contrast so the cat stays the subject
     for (x, y, r, c) in [
-        (150, 180, 90, bytes((255, 217, 184))),
-        (880, 140, 70, bytes((255, 217, 184))),
-        (920, 420, 55, bytes((255, 233, 207))),
-        (90, 520, 60, bytes((255, 233, 207))),
-        (830, 760, 80, bytes((255, 217, 184))),
-        (120, 830, 65, bytes((255, 233, 207))),
-    ]:
-        circle(x, y, r, c)
+            (130, 150, 62, BOKEH), (880, 120, 74, BOKEH),
+            (120, 830, 56, BOKEH2), (905, 800, 66, BOKEH),
+            (80, 480, 40, BOKEH), (950, 470, 44, BOKEH2),
+            (300, 90, 34, BOKEH2), (700, 80, 30, BOKEH)]:
+        disc(x, y, r, c)
 
 
-def saucer():
-    # wide flat saucer under the cup
-    ellipse(512, 888, 392, 58, SAUCER_EDGE)
-    ellipse(512, 884, 378, 50, SAUCER)
-    ellipse(512, 882, 300, 36, bytes((255, 251, 244)))
+def box():
+    # open cardboard box, front face + flaps, cat sits inside it
+    # front face
+    rrect(168, 700, 856, 952, 14, BOX)
+    # top rim band (opening) and interior shadow
+    poly([(168, 700), (856, 700), (820, 748), (204, 748)], BOX_IN)
+    ellipse(512, 724, 322, 26, (122, 86, 50))
+    # tape strip down the middle of the front face
+    poly([(492, 748), (532, 748), (532, 952), (492, 952)], TAPE)
+    thick_line(492, 748, 492, 952, 3, BOX_DARK)
+    thick_line(532, 748, 532, 952, 3, BOX_DARK)
+    # side flaps, angled outward
+    poly([(168, 700), (238, 636), (330, 668), (262, 716)], BOX)
+    poly([(168, 700), (238, 636), (330, 668), (262, 716)], BOX)  # densify
+    poly([(856, 700), (786, 636), (694, 668), (762, 716)], BOX)
+    # flap edge lines
+    thick_line(168, 700, 238, 636, 5, BOX_DARK)
+    thick_line(856, 700, 786, 636, 5, BOX_DARK)
+    # front face outline
+    thick_line(168, 700, 856, 700, 6, OUT)
+    thick_line(168, 700, 168, 938, 6, OUT)
+    thick_line(856, 700, 856, 938, 6, OUT)
+    thick_line(168, 938, 856, 938, 6, OUT)
+    # small heart drawn on the box front (charm, no text)
+    disc(512, 830, 16, (226, 110, 128))
+    disc(540, 830, 16, (226, 110, 128))
+    poly([(496, 838), (556, 838), (526, 876)], (226, 110, 128))
 
 
 def tail():
-    # curled tail peeking out of the cup's left side, tip pointing up
-    pts = []
-    for i in range(13):
-        t = i / 12.0
-        a = math.pi * (0.95 - 0.75 * t)   # arc from low-left up around
-        x = 235 + 105 * math.cos(a) - 20 * t
-        y = 800 - 150 * math.sin(a) + 10 * t
-        pts.append((x, y))
-    band_dots(pts, 46, 36, OUTLINE, CREAM)
-    # two soft ginger stripes across the tail
-    for (x, y) in [pts[4], pts[8]]:
-        circle(x, y, 37, GINGER)
-        circle(x, y, 30, CREAM)
-    # tail tip tuft (free end, lower left)
-    circle(pts[0][0], pts[0][1], 38, CREAM)
+    # curled tail hook peeking from behind the box's right edge.
+    # Drawn BEFORE the box so its base stays hidden behind the box.
+    arc(905, 895, 52, 175, 345, 42, OUT)
+    arc(905, 895, 52, 175, 345, 34, GREY)
+    disc(955, 881, 17, OUT)
+    disc(955, 881, 13, WHITE)
 
 
-def cup():
-    # cup body: tapered bowl, rim at y=660, bottom resting on the saucer
-    for y in range(660, 892):
-        t = (y - 660) / 232.0
-        half = 320 - 92 * (t ** 1.15)
-        if y > 860:  # round the bottom
-            half -= (y - 860) * 2.2
-        if half < 4:
-            break
-        _span(int(y * SS), int((512 - half) * SS), int((512 + half) * SS) + 1,
-              TEAL)
-    # right-side shading
-    for y in range(668, 884):
-        t = (y - 660) / 232.0
-        half = 320 - 92 * (t ** 1.15)
-        if y > 860:
-            half -= (y - 860) * 2.2
-        if half < 4:
-            break
-        _span(int(y * SS), int((512 + half * 0.45) * SS),
-              int((512 + half) * SS) + 1, TEAL_DARK)
-    # left highlight stripe
-    for y in range(672, 840):
-        t = (y - 660) / 232.0
-        half = 320 - 92 * (t ** 1.15)
-        _span(int(y * SS), int((512 - half * 0.82) * SS),
-              int((512 - half * 0.66) * SS) + 1, TEAL_LIGHT)
-    # handle: C-shaped arc on the right, opening toward the cup
-    pts = []
-    for i in range(29):
-        a = math.radians(-70 + 220 * i / 28.0)
-        pts.append((858 + 92 * math.cos(a), 748 + 92 * math.sin(a)))
-    band_dots(pts, 34, 24, TEAL_DARK, TEAL)
-    # rim + milky tea surface
-    ellipse(512, 660, 322, 64, TEAL_DARK)
-    ellipse(512, 660, 302, 52, TEA)
-
-
-def steam():
-    # two soft wavy wisps rising past the head, left and right
-    for (x0, phase) in [(350, 0.0), (680, 1.7)]:
-        pts = []
-        for i in range(16):
-            t = i / 15.0
-            x = x0 + 26 * math.sin(phase + t * 5.2)
-            y = 268 - t * 138
-            pts.append((x, y))
-        for i, (x, y) in enumerate(pts):
-            r = 15 - 7 * (i / 15.0)
-            circle(x, y, r, STEAM)
+def butterfly(cx, cy):
+    # small orange butterfly, wings up, hovering above the nose
+    # upper wings
+    rellipse(cx - 26, cy - 16, 26, 15, -32, OUT)
+    rellipse(cx - 26, cy - 16, 21, 11, -32, FLY_O)
+    rellipse(cx + 26, cy - 16, 26, 15, 32, OUT)
+    rellipse(cx + 26, cy - 16, 21, 11, 32, FLY_O)
+    # lower wings
+    rellipse(cx - 20, cy + 12, 17, 10, -140, OUT)
+    rellipse(cx - 20, cy + 12, 13, 7, -140, FLY_O)
+    rellipse(cx + 20, cy + 12, 17, 10, 140, OUT)
+    rellipse(cx + 20, cy + 12, 13, 7, 140, FLY_O)
+    # wing dots
+    disc(cx - 26, cy - 18, 5, FLY_D)
+    disc(cx + 26, cy - 18, 5, FLY_D)
+    # body + antennae
+    ellipse(cx, cy, 5, 15, FLY_BODY)
+    arc(cx - 2, cy - 14, 12, 200, 250, 3, FLY_BODY)
+    arc(cx + 2, cy - 14, 12, 290, 340, 3, FLY_BODY)
+    disc(cx - 9, cy - 24, 3, FLY_BODY)
+    disc(cx + 9, cy - 24, 3, FLY_BODY)
+    # tiny motion dots
+    disc(cx - 52, cy - 34, 3, FLY_O)
+    disc(cx + 54, cy - 30, 3, FLY_O)
 
 
 def kitten():
-    # ears first so the head overlaps their bases
-    poly([(318, 340), (392, 168), (478, 322)], OUTLINE)
-    poly([(338, 322), (392, 196), (458, 310)], CREAM)
-    poly([(362, 306), (392, 222), (436, 298)], PINK)
-    poly([(706, 340), (632, 168), (546, 322)], OUTLINE)
-    poly([(686, 322), (632, 196), (566, 310)], CREAM)
-    poly([(662, 306), (632, 222), (588, 298)], PINK)
-    # head
-    circle(512, 470, 233, OUTLINE)
-    circle(512, 470, 225, CREAM)
+    # chest peeking above the box rim
+    outline_ellipse(512, 720, 165, 78, CREAM, OUT, 6)
+    # ---- head ----
+    # ears (slightly asymmetric = head tilt); big so they clear the head
+    poly([(318, 400), (348, 205), (470, 330)], OUT)
+    poly([(332, 380), (356, 240), (446, 326)], GREY)
+    poly([(350, 356), (360, 270), (428, 322)], PINK_IN)
+    poly([(560, 322), (668, 198), (712, 388)], OUT)
+    poly([(578, 322), (660, 232), (692, 372)], GREY)
+    poly([(596, 322), (652, 262), (676, 352)], PINK_IN)
+    # head ball
+    outline_disc(512, 470, 225, GREY, OUT, 7)
+    # cream face patch (muzzle + cheeks)
+    ellipse(512, 545, 152, 112, CREAM)
     # forehead stripes
-    thick_line(470, 300, 478, 262, 14, GINGER)
-    thick_line(512, 292, 512, 252, 14, GINGER)
-    thick_line(554, 300, 546, 262, 14, GINGER)
-    # big sleepy amber eyes
-    for cx in (425, 599):
-        circle(cx, 482, 52, IRIS)
-        circle(cx, 482, 23, PUPIL)
-        circle(cx - 15, 465, 11, WHITE)
-        circle(cx + 13, 497, 5, WHITE)
-        # sleepy eyelid draped over the top of the eye
-        ellipse(cx, 438, 54, 30, CREAM)
-        for i in range(25):
-            a = math.radians(205 + 130 * i / 24.0)
-            circle(cx + 54 * math.cos(a), 438 + 30 * math.sin(a), 3, OUTLINE)
-    # nose + omega mouth
-    poly([(490, 544), (534, 544), (512, 574)], OUTLINE)
-    poly([(494, 548), (530, 548), (512, 570)], NOSE)
-    arc_dots(499, 584, 13, 0.0, math.pi, 6, OUTLINE, steps=12)
-    arc_dots(525, 584, 13, 0.0, math.pi, 6, OUTLINE, steps=12)
-    # blush cheeks
-    ellipse(368, 556, 34, 20, BLUSH)
-    ellipse(656, 556, 34, 20, BLUSH)
+    thick_line(470, 288, 462, 318, 10, GREY_D)
+    thick_line(512, 282, 512, 314, 10, GREY_D)
+    thick_line(554, 288, 562, 318, 10, GREY_D)
+    # ---- eyes: big, round, bright, looking up at the butterfly ----
+    for (ex, ey) in [(428, 462), (596, 455)]:
+        outline_disc(ex, ey, 58, EYE, OUT, 6)
+        disc(ex, ey - 12, 30, PUPIL)
+        disc(ex - 14, ey - 26, 16, WHITE)
+        disc(ex + 12, ey + 6, 7, WHITE)
+    # upper lid lines + tiny lashes
+    arc(428, 462, 58, 205, 335, 6, OUT)
+    arc(596, 455, 58, 205, 335, 6, OUT)
+    thick_line(376, 414, 362, 400, 5, OUT)
+    thick_line(384, 408, 374, 392, 5, OUT)
+    thick_line(648, 407, 662, 393, 5, OUT)
+    thick_line(640, 401, 652, 385, 5, OUT)
+    # blush
+    disc(366, 568, 24, BLUSH)
+    disc(658, 562, 24, BLUSH)
+    # nose
+    poly([(486, 546), (538, 546), (512, 574)], OUT)
+    poly([(491, 550), (533, 550), (512, 568)], NOSE)
+    # open happy mouth + tongue
+    outline_ellipse(512, 610, 26, 30, MOUTH, OUT, 4)
+    ellipse(512, 624, 17, 11, TONGUE)
     # whiskers
-    for (x1, y1, x2, y2) in [
-        (398, 540, 296, 512), (396, 556, 292, 552), (398, 572, 300, 592),
-        (626, 540, 728, 512), (628, 556, 732, 552), (626, 572, 724, 592),
-    ]:
-        thick_line(x1, y1, x2, y2, 5, OUTLINE)
-    # paws draped over the cup rim
-    for cx in (395, 629):
-        ellipse(cx, 652, 70, 50, OUTLINE)
-        ellipse(cx, 652, 62, 42, CREAM)
-        thick_line(cx - 16, 638, cx - 16, 668, 5, OUTLINE)
-        thick_line(cx + 16, 638, cx + 16, 668, 5, OUTLINE)
-
-
-def fish_biscuit():
-    # tiny fish biscuit waiting on the saucer
-    poly([(846, 884), (874, 864), (874, 904)], OUTLINE)
-    poly([(848, 884), (870, 868), (870, 900)], FISH)
-    ellipse(810, 884, 44, 24, OUTLINE)
-    ellipse(810, 884, 40, 20, FISH)
-    circle(792, 878, 4, PUPIL)
+    for (x0, y0, x1, y1) in [
+            (392, 560, 296, 540), (392, 578, 300, 582),
+            (392, 596, 312, 622),
+            (632, 554, 728, 534), (632, 572, 724, 576),
+            (632, 590, 712, 616)]:
+        thick_line(x0, y0, x1, y1, 4, OUT)
+    # raised paw beside the head, reaching up for the butterfly
+    # (overlaps the head edge so it reads as attached, no floating arm)
+    outline_disc(715, 320, 42, WHITE, OUT, 6)
+    thick_line(704, 288, 702, 306, 4, OUT)
+    thick_line(716, 284, 716, 302, 4, OUT)
+    thick_line(728, 288, 730, 306, 4, OUT)
+    # resting paw on the box rim
+    outline_ellipse(385, 692, 58, 32, WHITE, OUT, 6)
+    thick_line(368, 676, 368, 692, 4, OUT)
+    thick_line(400, 676, 400, 692, 4, OUT)
 
 
 def main():
     background()
-    saucer()
     tail()
-    cup()
-    steam()
+    box()
     kitten()
-    fish_biscuit()
+    butterfly(770, 230)
     rgb = downsample()
     data = png_bytes(W, W, rgb)
     outdir = os.environ.get("MAKEFUN_OUTPUT_DIR", "/output")

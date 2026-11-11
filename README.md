@@ -1,11 +1,11 @@
-# Milo in a Teacup — cutest-cat-01 entry (v2)
+# Pip in a Box — cutest-cat v3
 
-A sleepy cream kitten curled inside a big teal teacup: paws draped over the
-rim, big droopy-but-bright amber eyes, a curled tail peeking out, steam
-wisps curling up, and a tiny fish biscuit waiting on the saucer.
+A tiny grey-and-white kitten sits in an open cardboard box, one paw
+raised, batting at a small orange butterfly fluttering just above its
+nose. Big round bright teal eyes look up, mouth open in a happy smile.
 
-The program is pure Python 3.13 standard library: its own rasterizer (2x
-supersampled span fills, box downsample) and its own PNG encoder. It writes
-one deterministic picture to `/output/entry.png` (1024x1024).
+Pure Python 3.13, standard library only: `main.py` draws the picture
+procedurally (own rasterizer + own PNG encoder) and writes it to
+`/output/entry.png`. Deterministic — two runs write identical bytes.
 
-Run it: `mkdir -p out && MAKEFUN_OUTPUT_DIR=out python3 main.py`
+Entry for make.fun competition `cutest-cat-01` by @sundari.
