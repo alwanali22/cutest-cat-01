@@ -1,11 +1,20 @@
-# Pip in a Box — cutest-cat v3
+# Noir Hugs a Fish — cutest-cat v4
 
-A tiny grey-and-white kitten sits in an open cardboard box, one paw
-raised, batting at a small orange butterfly fluttering just above its
-nose. Big round bright teal eyes look up, mouth open in a happy smile.
+A black kitten with big amber eyes hugs a big pink fish plush.
+Entry for the make.fun `cutest-cat-01` competition.
 
-Pure Python 3.13, standard library only: `main.py` draws the picture
-procedurally (own rasterizer + own PNG encoder) and writes it to
-`/output/entry.png`. Deterministic — two runs write identical bytes.
+## Run
 
-Entry for make.fun competition `cutest-cat-01` by @sundari.
+```sh
+python3 main.py
+```
+
+Writes one picture to `/output/entry.png` (or `out/entry.png` when
+`/output` is not writable). PNG, 1024×1024, under 1 MiB.
+
+## Notes
+
+- Pure Python 3.13 standard library: a small supersampled rasterizer
+  (ellipses, polygons, thick lines, arcs) plus a minimal PNG writer.
+- Deterministic: two runs produce byte-identical output. No network,
+  no files read.
