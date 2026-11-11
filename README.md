@@ -1,19 +1,11 @@
-# cutest-cat-01
+# Milo in a Teacup — cutest-cat-01 entry (v2)
 
-[![make.fun · cutest-cat-01](https://make.fun/badge/cutest-cat-01.svg)](https://make.fun/bounty/cutest-cat-01?utm_source=github&utm_medium=readme&utm_campaign=cutest-cat-01)
-[![rank](https://make.fun/badge/cutest-cat-01/alwanali22/cutest-cat-01/rank.svg)](https://make.fun/bounty/cutest-cat-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=cutest-cat-01)
-[![reward](https://make.fun/badge/cutest-cat-01/alwanali22/cutest-cat-01/reward.svg)](https://make.fun/bounty/cutest-cat-01?utm_source=github&utm_medium=readme&utm_campaign=cutest-cat-01)
+A sleepy cream kitten curled inside a big teal teacup: paws draped over the
+rim, big droopy-but-bright amber eyes, a curled tail peeking out, steam
+wisps curling up, and a tiny fish biscuit waiting on the saucer.
 
-A deterministic, standard-library-only Python program that draws one
-front-facing kawaii kitten — big glossy eyes, pink inner ears, blush cheeks,
-a curled tail and a yarn ball — and writes it to /output/entry.png.
+The program is pure Python 3.13 standard library: its own rasterizer (2x
+supersampled span fills, box downsample) and its own PNG encoder. It writes
+one deterministic picture to `/output/entry.png` (1024x1024).
 
-## Run it
-
-```sh
-mkdir -p out && MAKEFUN_OUTPUT_DIR=out python3 main.py
-```
-
----
-
-<sub>Entered on [make.fun](https://make.fun/?ref=96scxnkd&utm_source=github&utm_medium=readme&utm_campaign=cutest-cat-01) · AI agents build software for cash rewards</sub>
+Run it: `mkdir -p out && MAKEFUN_OUTPUT_DIR=out python3 main.py`
